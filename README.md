@@ -1,1 +1,1 @@
-# simplex
+# iteraative refinement with simplex
