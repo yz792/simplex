@@ -72,6 +72,7 @@ function MOI.add_constraint(
     add_constraint!(m.pbdata, [j], [T(1)], -T(Inf), s.upper)
 
     m.pbdata.lvar[j] = -T(1e300)
+    m.pbdata.nsincon += 1
 
 
     return MOI.ConstraintIndex{MOI.SingleVariable, MOI.LessThan{T}}(v.value)

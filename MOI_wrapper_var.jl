@@ -27,8 +27,8 @@ function MOI.add_variable(m::Optimizer{T}) where {T}
     # TODO: dispatch a function call to m.inner instead of m.inner.pbdata
     m.var_counter += 1
     x = MOI.VariableIndex(m.var_counter)
+    #j = add_variable!(m.pbdata, Int[], T[], zero(T), T(-Inf), T(Inf))
     j = add_variable!(m.pbdata, Int[], T[], zero(T), T(-Inf), T(Inf))
-
     # Update tracking of variables
     m.var_indices[x] = j
     #m.var2bndtype[x] = Set{Type{<:MOI.AbstractScalarSet}}()

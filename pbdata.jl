@@ -30,6 +30,7 @@ mutable struct ProblemData{T}
     # Dimensions
     ncon::Int  # Number of rows
     nvar::Int  # Number of columns (i.e. variables)
+    nsincon::Int # Number of single constraint (i.e. so that every variable will be treated as free variable)
 
     # Objective
     # TODO: objective sense
@@ -48,6 +49,7 @@ mutable struct ProblemData{T}
     # qcols
 
     # Bounds
+    # only store in the form Ax <= b and x >= l
     ucon::Vector{T}
     lvar::Vector{T}
 
@@ -57,7 +59,7 @@ mutable struct ProblemData{T}
 
     # Only allow empty problems to be instantiated for now
     ProblemData{T}(pbname::String="") where {T} = new{T}(
-        pbname, 0, 0,
+        pbname, 0, 0,0,
         true, T[], zero(T),
         Row{T}[], Col{T}[],
          T[], T[],
@@ -73,6 +75,7 @@ function Base.empty!(pb::ProblemData{T}) where{T}
 
     pb.ncon = 0
     pb.nvar = 0
+    pb.nsincon = 0
 
     pb.objsense = true
     pb.obj = T[]
@@ -164,6 +167,7 @@ function add_constraint!(pb::ProblemData{T},
     if isfinite(l)
         pb.ncon += 1
         push!(pb.ucon, -l)
+        # if already named then don't add again
         if isfinite(u)
             push!(pb.con_names, "")
         else
@@ -320,182 +324,3 @@ function load_problem!(pb::ProblemData{T},
 
     return pb
 end
-
-# =============================
-#     Problem modification
-# =============================
-
-# """
-#     delete_constraint!(pb::ProblemData, rind::Int)
-#
-# Delete a single constraint from problem `pb`.
-# """
-# function delete_constraint!(pb::ProblemData{T}, rind::Int) where{T}
-#     # Sanity checks
-#     1 <= rind <= pb.ncon || error("Invalid row index $rind")
-#
-#     # Delete row name and bounds
-#     deleteat!(pb.con_names, rind)
-#     deleteat!(pb.lcon, rind)
-#     deleteat!(pb.ucon, rind)
-#
-#     # Update columns
-#     for (j, col) in enumerate(pb.acols)
-#         # Search for row in that column
-#         rg = searchsorted(col.nzind, rind)
-#         if rg.start > length(col.nzind)
-#             # Nothing to do
-#             continue
-#         else
-#             if col.nzind[rg.start] == rind
-#                 # Delete row from column
-#                 deleteat!(col.nzind, rg.start)
-#                 deleteat!(col.nzval, rg.start)
-#             end
-#
-#             # Decrement subsequent row indices
-#             col.nzind[rg.start:end] .-= 1
-#         end
-#     end
-#
-#     # Delete row
-#     deleteat!(pb.arows, rind)
-#
-#     # Update row counter
-#     pb.ncon -= 1
-#     return nothing
-# end
-
-# """
-#     delete_constraints!(pb::ProblemData, rinds)
-#
-# Delete rows in collection `rind` from problem `pb`.
-#
-# # Arguments
-# * `pb::ProblemData`
-# * `rinds`: collection of row indices to be removed
-# """
-# function delete_constraints!(pb::ProblemData{T}, rinds) where{T}
-#     # TODO: don't use fallback
-#     for i in rinds
-#         delete_constraint!(pb, i)
-#     end
-#     return nothing
-# end
-#
-# """
-#     delete_variable!(pb, cind)
-#
-# Delete a single column from problem `pb`.
-# """
-# function delete_variable!(pb::ProblemData{T}, cind::Int) where{T}
-#     # Sanity checks
-#     1 <= cind <= pb.nvar || error("Invalid column index $cind")
-#
-#     # Delete column name, objective and bounds
-#     deleteat!(pb.var_names, cind)
-#     deleteat!(pb.obj,  cind)
-#     deleteat!(pb.lvar, cind)
-#     deleteat!(pb.uvar, cind)
-#
-#     # Update rows
-#     for (i, row) in enumerate(pb.arows)
-#         # Search for column in that row
-#         rg = searchsorted(row.nzind, cind)
-#         if rg.start > length(row.nzind)
-#             # Nothing to do
-#             continue
-#         else
-#             if row.nzind[rg.start] == cind
-#                 # Column appears in row
-#                 deleteat!(row.nzind, rg.start)
-#                 deleteat!(row.nzval, rg.start)
-#             end
-#
-#             # Decrement subsequent column indices
-#             row.nzind[rg.start:end] .-= 1
-#         end
-#     end
-#
-#     # Delete column
-#     deleteat!(pb.acols, cind)
-#
-#     # Update column counter
-#     pb.nvar -= 1
-#     return nothing
-# end
-#
-# """
-#     delete_variables!(pb::ProblemData, cinds)
-#
-# Delete a collection of columns from problem `pb`.
-#
-# # Arguments
-# * `pb::ProblemData`
-# * `cinds`: collection of row indices to be removed
-# """
-# function delete_variables!(pb::ProblemData{T}, cinds) where{T}
-#     # TODO: don't use fallbackis
-#     for j in cinds
-#         delete_variable!(pb, j)
-#     end
-#     return nothing
-# end
-#
-# """
-#     set_coefficient!(pb, i, j, v)
-#
-# Set the coefficient `(i, j)` to value `v`.
-#
-# # Arguments
-# * `pb::ProblemData{T}`: the problem whose coefficient
-# * `i::Int`: row index
-# * `j::Int`: column index
-# * `v::T`: coefficient value
-# """
-# function set_coefficient!(pb::ProblemData{T}, i::Int, j::Int, v::T) where{T}
-#     # Sanity checks
-#     1 <= i <= pb.ncon && 1 <= j <= pb.nvar || error(
-#         "Cannot access coeff $((i, j)) in a model of size ($(pb.ncon), $(pb.nvar))"
-#     )
-#
-#     # Update row and column
-#     _set_coefficient!(pb.arows[i], j, v)
-#     _set_coefficient!(pb.acols[j], i, v)
-#
-#     return nothing
-# end
-#
-# """
-#     _set_coefficient!(roc::RowOrCol{T}, ind::Int, v::T)
-#
-# Set coefficient to value `v`.
-# """
-# function _set_coefficient!(roc::RowOrCol{T}, ind::Int, v::T) where{T}
-#     # Check if index already exists
-#     k = searchsortedfirst(roc.nzind, ind)
-#
-#     if (1 <= k <= length(roc.nzind)) && roc.nzind[k] == ind
-#         # This coefficient was a non-zero before
-#         if iszero(v)
-#             deleteat!(roc.nzind, k)
-#             deleteat!(roc.nzval, k)
-#         else
-#             roc.nzval[k] = v
-#         end
-#     else
-#         # Only add coeff if non-zero
-#         if !iszero(v)
-#             insert!(roc.nzind, k, ind)
-#             insert!(roc.nzval, k, v)
-#         end
-#     end
-#
-#     return nothing
-# end
-
-# =============================
-#     Problem queries
-# =============================
-
-# TODO
