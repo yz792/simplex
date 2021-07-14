@@ -150,7 +150,7 @@ end
 #     MOI.check_result_index_bounds(m, attr)
 #     return get_attribute(m.inner, DualObjectiveValue())
 # end
-#
+
 # #
 #   RawSolver
 #

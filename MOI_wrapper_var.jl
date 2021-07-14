@@ -27,8 +27,8 @@ function MOI.add_variable(m::Optimizer{T}) where {T}
     # TODO: dispatch a function call to m.inner instead of m.inner.pbdata
     m.var_counter += 1
     x = MOI.VariableIndex(m.var_counter)
-    #j = add_variable!(m.pbdata, Int[], T[], zero(T), T(-Inf), T(Inf))
     j = add_variable!(m.pbdata, Int[], T[], zero(T), T(-Inf), T(Inf))
+
     # Update tracking of variables
     m.var_indices[x] = j
     #m.var2bndtype[x] = Set{Type{<:MOI.AbstractScalarSet}}()
@@ -53,61 +53,6 @@ function MOI.add_variables(m::Optimizer, N::Int)
 end
 
 
-# =============================================
-#   3. Delete variables
-# =============================================
-# function MOI.delete(m::Optimizer, v::MOI.VariableIndex)
-#     MOI.throw_if_not_valid(m, v)
-#
-#     # Update inner model
-#     j = m.var_indices[v]
-#     delete_variable!(m.pbdata, j)
-#
-#     # Remove bound tracking
-#     #delete!(m.var2bndtype, v)
-#
-#     # TODO: name update
-#
-#     # Update indices correspondence
-#     deleteat!(m.var_indices_moi, j)
-#     delete!(m.var_indices, v)
-#     for v_ in m.var_indices_moi[j:end]
-#         m.var_indices[v_] -= 1
-#     end
-#     return nothing
-# end
-
-# =============================================
-#   4. Get/set variable attributes
-# =============================================
-
-# MOI.get(m::Optimizer, ::Type{MOI.VariableIndex}, name::String) = get(m.name2var, name, nothing)
-#
-# function MOI.get(m::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex)
-#     MOI.throw_if_not_valid(m, v)
-#
-#     # Get name from inner model
-#     j = m.var_indices[v]
-#     return get_attribute(m.inner, VariableName(), j)
-# end
-#
-# function MOI.set(m::Optimizer, ::MOI.VariableName, v::MOI.VariableIndex, name::String)
-#     # Check that variable does exist
-#     MOI.throw_if_not_valid(m, v)
-#
-#     # Check that name is unique
-#     v_ = get(m.name2var, name, nothing)
-#     v_ === nothing || v_ == v || error("Dupplicate variable name $name")
-#
-#     # Update inner model
-#     j = m.var_indices[v]
-#     set_attribute(m.inner, VariableName(), j, name)
-#
-#     # Update names mapping
-#     m.name2var[name] = v
-#
-#     return nothing
-# end
 #
 function MOI.get(m::Optimizer{T},
     attr::MOI.VariablePrimal,
@@ -115,8 +60,10 @@ function MOI.get(m::Optimizer{T},
 ) where{T}
     MOI.throw_if_not_valid(m, x)
     MOI.check_result_index_bounds(m, attr)
-
     # Query inner solution
     j = m.var_indices[x]
+    if j>m.pbdata.zidx
+        j -= 1
+    end
     return m.inner.x[j]
 end

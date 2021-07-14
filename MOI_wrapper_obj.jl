@@ -70,8 +70,7 @@ function MOI.set(
         m.pbdata.obj[j] += t.coefficient  # there may be dupplicates
     end
     #set_attribute(m.inner, ObjectiveConstant(), f.constant)  # objective offset
-
+    
     m.pbdata.obj0 = f.constant
-
     return nothing
 end

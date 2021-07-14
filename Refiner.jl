@@ -49,7 +49,7 @@ mutable struct Refiner{T}
     function Refiner{T}(; kwargs...) where{T}
         # default setting
         model =
-            new{T}(GLPK.Optimizer, 10, false,T , 1e8, 1e8,1,T.(zeros(1,1)),T[],T[],T[],T[],T[],0,MOI.OPTIMIZE_NOT_CALLED,MOI.UNKNOWN_RESULT_STATUS,MOI.UNKNOWN_RESULT_STATUS,0,0,0,0)
+            new{T}(GLPK.Optimizer, 10, false,T , 1e8, 1e8,0,T.(zeros(1,1)),T[],T[],T[],T[],T[],0,MOI.OPTIMIZE_NOT_CALLED,MOI.UNKNOWN_RESULT_STATUS,MOI.UNKNOWN_RESULT_STATUS,0,0,0,0)
 
 
         if length(kwargs) > 0
@@ -214,8 +214,12 @@ function optimize!(opt::Refiner)
 
     m,n = size(A)
 
+    #println( Float64.(A))
+    # println( b)
+    # println( c)
+    # println(l)
 
-    mode_dict = ["0 = solve iterative linear programming","1 = solving iterative linear system", "2 = solve high precision linear system", "3 = solve with inverses"]
+    mode_dict = ["0 = solve iterative linear programming","1 = solving iterative linear system", "2 = solve high precision linear system"]
 
     if verbose
         println("using mode ", mode_dict[mode+1])
@@ -250,217 +254,322 @@ end
 
 
 
+# solve iterative linear programming
+function _iter_ref_lp(
+        #inner<:MOI.AbstractOptimizer,
+        inner,
+        A::AbstractArray{<:AbstractFloat,2},
+        b::Array{<:AbstractFloat,1},
+        c::Array{<:AbstractFloat,1},
+        l::Array{<:AbstractFloat,1},
+        T,
+        verbose,
+        alpha_p,
+        alpha_d,
+        iter_max,
+        tp::Float64,
+        ts::Float64)
 
 
- #solve iterative linear programming
- function _iter_ref_lp(
-         #inner<:MOI.AbstractOptimizer,
-         inner,
-         A::AbstractArray{<:AbstractFloat,2},
-         b::Array{<:AbstractFloat,1},
-         c::Array{<:AbstractFloat,1},
-         l::Array{<:AbstractFloat,1},
-         T,
-         verbose,
-         alpha_p,
-         alpha_d,
-         iter_max,
-         tp::Float64,
-         ts::Float64)
+        t = time()
 
-
-         t = time()
-
-         # check dimension
-         m,n = size(A)
-         x_star = zeros(T,n)
-         y_star = zeros(T,m)
-         rt = 0
-
-
-
-         # initialize variables
-         A_bar = Float64.(A)
-         b_bar = Float64.(b)
-         c_bar = Float64.(c)
-         l_bar = Float64.(l)
-
-         A = T.(A)
-         b = T.(b)
-         c = T.(c)
-         l = T.(l)
-
-         eps_primal = sqrt(eps(T))
-         eps_dual = sqrt(eps(T))
-         eps_slack = eps_primal*n*eps_dual
-
-         coeff_primal = T(1.0)
-         coeff_dual = T(1.0)
-
-         opt_primal =  Model()
-         set_optimizer(opt_primal, inner)
-         opt_dual =  Model()
-         set_optimizer(opt_dual, inner)
-
-         # core computation
-         for k = 1:iter_max
-
-                 empty!(opt_primal)
-                 empty!(opt_dual)
-
-                 #=
-                 Primal LP
-                         max   cx
-                         s.t.  Ax = b
-                                x >= l
-                 =#
-
-                 @show (A_bar)
-                 @show (b_bar)
-                 @show (c_bar)
-                 @show (l_bar)
-
-
-                 @variable(opt_primal, x[1:n])
-                 @objective(opt_primal, Min, dot(c_bar,x) )
-                 @constraint(opt_primal, constraint, A_bar * x .<= b_bar)
-                 @constraint(opt_primal, lower_bound, x.>=l_bar )
-                 JuMP.optimize!(opt_primal)
-
-                 @show (termination_status(opt_primal))
-
-                 tmp_t = time()
-
-                 if termination_status(opt_primal)==MOI.OPTIMAL || termination_status(opt_primal)==MOI.ALMOST_OPTIMAL
-                         # feasible and optimal
-                         x_prime = JuMP.value.(x)
-                         x_star = x_star + (1/coeff_primal)*x_prime
-
-                 elseif termination_status(opt_primal)==MOI.INFEASIBLE || termination_status(opt_primal)==MOI.ALMOST_INFEASIBLE
-                         # test infeasibility
-                         A_test = [A b-A*l]
-                         l_test = T.(zeros(n+1))
-                         l_test[n+1] = -1
-                         l_test[1:n] = l
-                         c_test = zeros(n+1)
-                         c_test[n+1] = 1
-                         #tp += (time()-t)
-                         test_status,test_rt,test_x,test_y,tp,ts = _iter_ref_lp(inner,A_test,b,c_test,l_test,T,false,alpha_p,alpha_d,iter_max,tp,ts)
-
-
-                         # original LP feasible
-                         if test_rt == -1.0
-                                 x_star = test_x[1:n] + l
-                         # original LP feasible with tolerance eps/k, k=-test_rt
-                         elseif test_rt >= -1 - eps_primal && test_rt < 0
-                                 x_star = -1/test_rt*test_x[1:n] + l
-                         # original LP infeasible
-                         else
-                                 tp += tmp_t - t
-                                 return termination_status(opt_primal),Inf,x_star,y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
-                         end
-
-                         # original LP unbounded
-                 elseif termination_status(opt_primal)==MOI.DUAL_INFEASIBLE || termination_status(opt_primal)==MOI.ALMOST_DUAL_INFEASIBLE
-
-                         # TODO might need change here
-
-                         x_prime = JuMP.value.(x)
-                         x_star = x_star + (1/coeff_primal)*x_prime
-                         tp += tmp_t - t
-                         return termination_status(opt_primal),-Inf,-x_star,y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
-
-                 else
-                         # other issue (e.g. numerical issue)
-                         tp += tmp_t - t
-                         return termination_status(opt_primal),0,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
-                 end
-
-                 #=
-                 Dual LP
-                         max   by - yAl
-                         s.t.  Ay <= c
-                 =#
-
-                 @variable(opt_dual, y[1:m])
-                 @objective(opt_dual, Max, dot(b_bar,y))
-                 @constraint(opt_dual, dual_constraint, A_bar' * y .== c_bar)
-                 @constraint(opt_dual, y.<= 0)
-                 JuMP.optimize!(opt_dual)
-
-                 @show (termination_status(opt_dual))
-
-
-                 if termination_status(opt_dual)==MOI.OPTIMAL || termination_status(opt_dual)==MOI.ALMOST_OPTIMAL
-                         # feasible and optimal
-                         y_prime = JuMP.value.(y)
-                         y_star = y_star + (1/coeff_dual)*y_prime
-                 else
-                         # other issue (e.g. numerical issue)
-                         tmp_t = time()
-                         tp += (tmp_t - t)
-                         return termination_status(opt_dual),0,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
-                 end
-
-                 #
-                 # y_prime = JuMP.dual.(constraint)
-                 # y_star = y_star + (1/coeff_dual)*y_prime
-
-                 # optimal value
-                 rt = dot(c,x_star)
-
-                 # compute residue
-                 b_hat = b - A*x_star
-                 c_hat = c - A'*y_star
-                 l_hat = l - x_star
-
-                 @show (b_hat)
-
-                 # compute tolerance
-                 delta_primal = max(minimum(b_hat))
-                 delta_dual = max(0,maximum(-c_hat))
-                 delta_slack = dot(b,y_star)-dot(c,x_star)
-
-                 if verbose
-                         @show k
-                         @show rt
-                         @show delta_primal
-                         @show delta_dual
-                         @show delta_slack
-
-                 end
+        # check dimension
+        m,n = size(A)
+        x_star = zeros(T,n)
+        y_star = zeros(T,m)
+        y_star_ = zeros(T,m)
+        x_star_ = zeros(T,n)
+        rt = 0
 
 
 
-                 # termination check
-                 if delta_primal<=eps_primal &&  delta_dual<=eps_dual && delta_slack <= eps_slack
-                         tmp_t = time()
-                         tp += (tmp_t - t)
-                         return termination_status(opt_primal),rt,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
-                 end
+        # initialize variables
+        A_bar = Float64.(A)
+        b_bar = Float64.(b)
+        c_bar = Float64.(c)
+        l_bar = Float64.(l)
+        #
+        # b_bar_ = copy(b_bar)
+        # c_bar_ = copy(c_bar)
+        # l_bar_ = copy(l_bar)
 
-                 # update LP
-                 coeff_primal = min(1/delta_primal,alpha_p*coeff_primal)
-                 coeff_dual = min(1/delta_dual,alpha_d*coeff_dual)
+        A = T.(A)
+        b = T.(b)
+        c = T.(c)
+        l = T.(l)
 
-                 b_hat = coeff_primal * b_hat
-                 c_hat = coeff_dual * c_hat
-                 l_hat = coeff_primal * l_hat
+        eps_primal = sqrt(eps(T))
+        eps_dual = sqrt(eps(T))
+        eps_slack = eps_primal*n*eps_dual
 
-                 b_bar = Float64.(b_hat)
-                 c_bar = Float64.(c_hat)
-                 l_bar = Float64.(l_hat)
-         end
+        coeff_primal = T(1.0)
+        coeff_dual = T(1.0)
 
-         solve_time = time() - t
-         tp += solve_time
+        coeff_primal_ = T(1.0)
+        coeff_dual_ = T(1.0)
 
-         # need more iteration to meet termination standard
-         @warn("More iterations needed")
-         return termination_status(opt_primal),rt,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+        opt_primal =  Model()
+        set_optimizer(opt_primal, inner)
+        opt_dual =  Model()
+        set_optimizer(opt_dual, inner)
 
- end
-#optimize by guessing index and solving linear system
+        prev_idx = 1:m
+        idx = 1:m
+
+        nslack = length(isfinite.(l))
+
+
+        ls1 = (1:n)[isfinite.(l_bar)]
+        ls2 = setdiff((1:n),ls1)
+
+        l[ls2] .= 0
+        l_bar[ls2] .= 0
+
+        # core computation
+        for k = 1:iter_max
+
+                empty!(opt_primal)
+                empty!(opt_dual)
+
+                #=
+                Primal LP
+                        max   cx
+                        s.t.  Ax = b
+                               x >= l
+                =#
+
+                @variable(opt_primal, x[1:n])
+                @objective(opt_primal, Min, dot(c_bar,x) )
+                @constraint(opt_primal, constraint, A_bar * x .== b_bar)
+                @constraint(opt_primal, lower_bound, x[ls1].>=l_bar[ls1] )
+                JuMP.optimize!(opt_primal)
+
+                tmp_t = time()
+
+                if termination_status(opt_primal)==MOI.OPTIMAL || termination_status(opt_primal)==MOI.ALMOST_OPTIMAL
+                        # feasible and optimal
+                        x_prime = JuMP.value.(x)
+                        x_star = x_star + (1/coeff_primal)*x_prime
+
+                        # # #
+                        y_prime_ = JuMP.dual.(constraint)
+                        y_star_ = y_star_ + (1/coeff_dual)*y_prime_
+
+                        # y_prime_ = JuMP.dual.(constraint)
+                        # y_star_ = y_star_ + (1/coeff_dual)*y_prime_
+
+                elseif termination_status(opt_primal)==MOI.INFEASIBLE || termination_status(opt_primal)==MOI.ALMOST_INFEASIBLE
+                        # test infeasibility
+                        A_test = [A b-A*l]
+                        l_test = T.(zeros(n+1))
+                        l_test[n+1] = -1
+                        l_test[1:n] = l
+                        c_test = zeros(n+1)
+                        c_test[n+1] = 1
+                        test_status,test_rt,test_x,test_y,tp,ts = _iter_ref_lp(inner,A_test,b,c_test,l_test,T,false,alpha_p,alpha_d,iter_max,tp,ts)
+
+
+                        # original LP feasible
+                        if test_rt == -1.0
+                                x_star = test_x[1:n] + l
+                        # original LP feasible with tolerance eps/k, k=-test_rt
+                        elseif test_rt >= -1 - eps_primal && test_rt < 0
+                                x_star = -1/test_rt*test_x[1:n] + l
+                        # original LP infeasible
+                        else
+                                tp += tmp_t - t
+                                return termination_status(opt_primal),Inf,x_star,y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+                        end
+
+                        # original LP unbounded
+                elseif termination_status(opt_primal)==MOI.DUAL_INFEASIBLE || termination_status(opt_primal)==MOI.ALMOST_DUAL_INFEASIBLE
+
+                        # TODO might need change here
+
+                        x_prime = JuMP.value.(x)
+                        x_star = x_star + (1/coeff_primal)*x_prime
+                        tp += tmp_t - t
+                        return termination_status(opt_primal),-Inf,-x_star,y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+
+                else
+                        # other issue (e.g. numerical issue)
+                        tp += tmp_t - t
+                        return termination_status(opt_primal),0,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+                end
+
+                #=
+                Dual LP
+                        max   by - yAl
+                        s.t.  Ay <= c
+                =#
+
+                l_bar[ls2] .= 0
+                @variable(opt_dual, y[1:m])
+                @objective(opt_dual, Max, dot(b_bar,y) - dot(y,A_bar*l_bar))
+                @constraint(opt_dual, con1, (A_bar' * y)[ls1] .<= c_bar[ls1])
+                @constraint(opt_dual, con2, (A_bar' * y)[ls2] .== c_bar[ls2])
+                JuMP.optimize!(opt_dual)
+
+
+
+                #
+                if termination_status(opt_dual)==MOI.OPTIMAL || termination_status(opt_dual)==MOI.ALMOST_OPTIMAL
+                        # feasible and optimal
+                        y_prime = JuMP.value.(y)
+                        y_star = y_star + (1/coeff_dual)*y_prime
+                        #
+                        # x_1 = JuMP.dual.(con1)
+                        # x_2 = JuMP.dual.(con2)
+                        # x_prime_ = [x_1;x_2]
+                        # x_star_ = x_star_ + (1/coeff_dual_)*x_prime_
+                else
+                        # other issue (e.g. numerical issue)
+                        println(termination_status(opt_dual))
+                        tmp_t = time()
+                        tp += (tmp_t - t)
+                        return termination_status(opt_dual),0,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+                end
+
+                # optimal value
+                rt = dot(c,x_star)
+
+                # compute residue
+                b_hat = b - A*x_star
+                c_hat = c - A'*y_star
+                l_hat = l - x_star
+                delta_primal = max(maximum(abs.(b_hat)),maximum(l_hat[ls1]))
+                delta_dual = max(0,maximum(-c_hat))
+
+                # b_hat_ = b - A*x_star_
+                # c_hat_ = c - A'*y_star
+                # l_hat_ = l - x_star_
+                # delta_primal_ = max(maximum(abs.(b_hat_)),maximum(l_hat_[ls1]))
+                # delta_dual_ = max(0,maximum(-c_hat_))
+
+                # @show y_star
+                # @show y_star_
+                delta_slack = -dot(b,y_star)+dot(c,x_star)
+                delta_slack_ = -dot(b,y_star_)+dot(c,x_star)
+
+                if verbose
+
+                        @show k
+                        @show rt
+                        @show delta_primal
+                        @show delta_dual
+                        @show delta_slack
+                        @show delta_slack_
+
+                        #
+                        idx = sortperm(abs.(-A'*y_star + c))[1:m]
+                        idx = sort(idx)
+
+
+                        @show setdiff(idx,prev_idx)
+                        prev_idx = idx
+                        # idx = sort(idx)
+                        #
+                        # #
+                        # # x_hehe = x_star[idx]
+                        # A_prime = copy(A)
+                        # A_prime = A_prime[:,idx]
+                        # #
+                        # x_hehe2 = Matrix(A_prime)\Vector(b)
+                        #
+                        # z = T.(zeros(n))
+                        # z[idx] = x_hehe2
+                        # # #
+                        # @show maximum(abs.(A*z - b))
+                        # @show minimum(z[ls1])
+                        # #@show x_star
+                        #
+                        # z = T.(zeros(n))
+                        # _solve_ls_iter(A,A_prime,b,l,z,iter_max,idx,eps_primal,true)
+                        # @show maximum(abs.(A*z - b))
+                        # @show minimum(z[ls1])
+
+
+                end
+
+
+
+
+
+
+
+
+                # termination check
+                if (delta_primal<=eps_primal &&  delta_dual<=eps_dual && delta_slack <= eps_slack) || (k == iter_max)
+                    #println(x_star)
+
+
+                    A_prime = copy(A)
+                    A_prime = A_prime[:,idx]
+                    @show cond(Matrix(Float64.(A_prime)))
+
+                    println()
+
+                    println("solving high precision LS directly")
+                    v = Matrix(A_prime) \ Vector(b)
+                    z = T.(zeros(n))
+                    z[idx] = v
+                    @show maximum(abs.(A*z - b))
+                    @show minimum(z[ls1])
+                    @show dot(c,z)
+
+                    println()
+
+                    println("solving iterative linear system")
+                    z = T.(zeros(n))
+                    _solve_ls_iter(A,A_prime,b,l,z,iter_max,idx,eps_primal,false)
+                    @show maximum(abs.(A*z - b))
+                    @show minimum(z[ls1])
+                    @show dot(c,z)
+
+                    #
+                    # @show maximum(abs.(A*x_star - b))
+                    # @show minimum(x_star[ls1])
+                        tmp_t = time()
+                        tp += (tmp_t - t)
+                        return termination_status(opt_primal),rt,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+
+
+                end
+
+                # update LP
+                coeff_primal = min(1/delta_primal,alpha_p*coeff_primal)
+                coeff_dual = min(1/delta_dual,alpha_d*coeff_dual)
+                b_hat = coeff_primal * b_hat
+                c_hat = coeff_dual * c_hat
+                l_hat = coeff_primal * l_hat
+                b_bar = Float64.(b_hat)
+                c_bar = Float64.(c_hat)
+                l_bar = Float64.(l_hat)
+
+
+                # coeff_primal_ = min(1/delta_primal_,alpha_p*coeff_primal_)
+                # coeff_dual_ = min(1/delta_dual_,alpha_d*coeff_dual_)
+                # b_hat_ = coeff_primal_ * b_hat_
+                # c_hat_ = coeff_dual_ * c_hat_
+                # l_hat_ = coeff_primal_ * l_hat_
+                # b_bar_ = Float64.(b_hat_)
+                # c_bar_ = Float64.(c_hat_)
+                # l_bar_ = Float64.(l_hat_)
+        end
+
+        solve_time = time() - t
+        tp += solve_time
+
+
+
+        # need more iteration to meet termination standard
+        @warn("More iterations needed")
+        return termination_status(opt_primal),rt,x_star, y_star,tp,ts,primal_status(opt_primal),dual_status(opt_primal)
+
+end
+
+
+# optimize by guessing index and solving linear system
 function _iter_ref_ls(
         #inner<:MOI.AbstractOptimizer,
         inner,
@@ -478,194 +587,102 @@ function _iter_ref_ls(
         ts::Float64
         )
 
-        #
+
         t1 = time()
-        #
+
         m,n = size(A)
-        #
+
+        x_star = zeros(T,n)
+        y_star = zeros(T,m)
 
         A_bar = Float64.(A)
         b_bar = Float64.(b)
         c_bar = Float64.(c)
         l_bar = Float64.(l)
 
+        # A = T.(A)
+        # b = T.(b)
+        # c = T.(c)
+        # l = T.(l)
 
-        @show (A_bar)
-        @show (b_bar)
-        @show (c_bar)
-        @show (l_bar)
-
-        A = T.(A)
-        b = T.(b)
-        c = T.(c)
-        l = T.(l)
-
-        x_star = zeros(n)
+        ls = 1:n
         eps_primal = sqrt(eps(T))
-        #
+
+        ls1 = ls[isfinite.(l)]
+
         if verbose
             println("Solving Linear program to get index")
         end
 
+        opt_dual =  Model()
+        set_optimizer(opt_dual, inner)
+
+        empty!(opt_dual)
+
+
+
+        @variable(opt_dual, y[1:m])
+        @objective(opt_dual, Max, dot(b_bar-A_bar*l_bar,y) )
+        @constraint(opt_dual, dual_constraint, A_bar' * y .<= c_bar)
+        JuMP.optimize!(opt_dual)
+
+
+        if termination_status(opt_dual)==MOI.OPTIMAL || termination_status(opt_dual)==MOI.ALMOST_OPTIMAL
+                # feasible and optimal
+                y_prime = JuMP.value.(y)
+        else
+
+                @warn("not able to solve under this mode. use iterative linear programming mode instead")
+                return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
+        end
+        #
+        #
         # opt_primal =  Model()
         # set_optimizer(opt_primal, inner)
-        #
         # @variable(opt_primal, x[1:n])
         # @objective(opt_primal, Min, dot(c_bar,x) )
-        # @constraint(opt_primal, constraint, A_bar * x .<= b_bar)
-        # #@constraint(opt_primal, lower_bound, x.>=l_bar )
+        # @constraint(opt_primal, constraint, A_bar * x .== b_bar)
+        # @constraint(opt_primal, lower_bound, x[ls1].>=l_bar[ls1] )
         # JuMP.optimize!(opt_primal)
-        #
-        # @show (termination_status(opt_primal))
-        #
-        # #@show (termination_status(opt_dual))
-        #
-        #
-        # if termination_status(opt_primal)==MOI.OPTIMAL || termination_status(opt_primal)==MOI.ALMOST_OPTIMAL
-        #         # feasible and optimal
-        #         x_prime = JuMP.value.(x)
-        #         y_prime = JuMP.dual.(constraint)
-        #         res = dot(c,x_star)
-        # else
-        #         # other issue (e.g. numerical issue)
-        #         #return termination_status(opt_dual),0,x_star, y_star
-        #         @warn("not able to solve under this mode. use iterative linear programming mode instead")
-        #         return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
-        # end
-
-        opt_dual =  Model()
-       set_optimizer(opt_dual, inner)
-       @variable(opt_dual, y[1:m])
-       @objective(opt_dual, Max, dot(b_bar,y))
-       @constraint(opt_dual, dual_constraint, A_bar' * y .== c_bar)
-       @constraint(opt_dual, y.<= 0)
-       JuMP.optimize!(opt_dual)
 
 
-       if termination_status(opt_dual)==MOI.OPTIMAL || termination_status(opt_dual)==MOI.ALMOST_OPTIMAL
-               # feasible and optimal
-               y_prime = JuMP.value.(y)
-               x_prime = JuMP.dual.(dual_constraint)
-       else
-                @show termination_status(opt_dual)
-               # other issue (e.g. numerical issue)
-               #return termination_status(opt_dual),0,x_star, y_star
-               @warn("not able to solve under this mode. use iterative linear programming mode instead")
-               return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
-       end
+        if termination_status(opt_primal)==MOI.OPTIMAL || termination_status(opt_primal)==MOI.ALMOST_OPTIMAL
+                # feasible and optimal
+                y_prime = JuMP.dual.(constraint)
 
+        else
+            @show termination_status(opt_primal)
+            return
+        end
 
-       res = dot(c,x_prime)
-
-        #x_star = x_prime
 
         t2 = time()
 
-        @show res
-        @show x_prime
-        @show y_prime
-
-
-
-        #tp += (t2-t1)
+        tp += (t2-t1)
 
         err = abs.(A'*y_prime-c)
         tmp = sortperm(err)
 
+        idx = tmp[1:m]
+        A_prime = A[:,idx]
 
-        hehe = (1:m)[(abs.(A*x_prime-b)).>=1e-5]
-        hehe2 = abs.(A*x_prime-b)
-        @show hehe
-        @show hehe2
-
-        #idx = tmp[1:6]
-
-        err = abs.(x_prime)
-        tmp = sortperm(err,rev=true)
-        @show tmp
-        idx = tmp[1:9]
-
-        #A_prime = A[:,idx]
-
-        hehe = [5, 6, 7, 8, 9, 10, 11, 12] + ones(8)*9
-        #push!(hehe,2)
-
-        hehe = setdiff((1:24),hehe)
-
-        A_prime = A[hehe,idx]
-
-        b_prime = b[hehe]
-
-        #x_star[idx] = A_prime\b_prime
-
-        @show (x_star)
-        @show (abs.(A*x_star-b))
-        @show x_star
-
-        for k = 1:10
-
-                x_star[idx] += (A_prime\b_prime)
+        idx = sort(idx)
 
 
-                b_hat = b - A*x_star
-
-
-
-                delta_primal = maximum(abs.(b_hat[hehe]))
-                #delta_primal = max(minimum(b_hat),delta_primal)
-
-
-                if verbose
-                    @show k
-                    @show delta_primal
-                end
-
-
-                if delta_primal<=eps_primal
-                        return delta_primal
-                end
-
-
-                b_prime = b_hat[hehe]
-        end
-
-
-
-        @show size(b)
-
-
-
-        @show A_prime
-
-        if verbose
-            println("Index found. Start Solving linear system")
-        end
-
-
-
-
-
-
-        # println(size(A_prime))
-        # lu(A_prime)
-
+        x_star = zeros(T,n)
         # plenty choice of solving linear equation
-        # try
-        #     if mode == 1
-        #         delta = _solve_ls_iter(A,A_prime,b,l,x_star,eps_primal,maxiter,idx,eps_primal,verbose)
-        #         #delta = _solve_ls_iter2(A,A_prime,r,l,x_star,eps_primal,maxiter,tmp,eps_primal,verbose)
-        #     elseif mode == 2
-        #         delta = _solve_ls(A_prime,b,x_star,idx)
-        #     elseif mode == 3
-        #         delta = _solve_ls_inv(A,A_prime,b,x_star,idx)
-        #         #delta = (maximum(abs.(A*x_star-b)))
-        #     end
-        # catch e
-        #     # TODO need further fix for "singluar matrix"
-        #
-        #     println(e)
-        #
-        # end
+        try
+            if mode == 1
+                delta = _solve_ls_iter(A,A_prime,b,l,x_star,maxiter,idx,eps_primal,verbose)
+            elseif mode == 2
+                delta = _solve_ls(A_prime,b,x_star,idx)
+            end
+        catch e
+            # TODO need further fix for "singluar matrix"
+            println(e)
+            @warn("not able to solve under this mode. use iterative linear programming mode instead")
+            return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
+        end
 
 
         ts += (time() - t2)
@@ -675,325 +692,28 @@ function _iter_ref_ls(
         # if delta > eps_primal
         #     return _iter_ref_ls(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,itermax,mode)
         # end
+
+
         res = dot(c,x_star)
-        return termination_status(opt_dual),res,x_star,y_prime,tp,ts,dual_status(opt_dual),primal_status(opt_dual)
-end
-
-# function _iter_ref_ls(
-#         #inner<:MOI.AbstractOptimizer,
-#         inner,
-#         A::AbstractArray{<:AbstractFloat,2},
-#         b::Array{<:AbstractFloat,1},
-#         c::Array{<:AbstractFloat,1},
-#         l::Array{<:AbstractFloat,1},
-#         T,
-#         verbose,
-#         alpha_p,
-#         alpha_d,
-#         maxiter,
-#         mode,
-#         tp::Float64,
-#         ts::Float64
-#         )
-#
-#
-#         t1 = time()
-#
-#         m,n = size(A)
-#
-#         x_star = zeros(T,n)
-#         y_star = zeros(T,m)
-#
-#         A_bar = Float64.(A)
-#         b_bar = Float64.(b)
-#         c_bar = Float64.(c)
-#         l_bar = Float64.(l)
-#
-#         A = T.(A)
-#         b = T.(b)
-#         c = T.(c)
-#         l = T.(l)
-#
-#         ls = 1:n
-#         eps_primal = sqrt(eps(T))
-#
-#         if verbose
-#             println("Solving Linear program to get index")
-#         end
-#
-#         opt_dual =  Model()
-#         set_optimizer(opt_dual, inner)
-#
-#         @variable(opt_dual, y[1:m])
-#         @objective(opt_dual, Max, dot(b_bar,y)-dot(y,A_bar*l_bar) )
-#         @constraint(opt_dual, dual_constraint, A_bar' * y .<= c_bar)
-#         JuMP.optimize!(opt_dual)
-#
-#
-#         if termination_status(opt_dual)==MOI.OPTIMAL || termination_status(opt_dual)==MOI.ALMOST_OPTIMAL
-#                 # feasible and optimal
-#                 y_prime = JuMP.value.(y)
-#         else
-#                 # other issue (e.g. numerical issue)
-#                 #return termination_status(opt_dual),0,x_star, y_star
-#                 @warn("not able to solve under this mode. use iterative linear programming mode instead")
-#                 return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
-#         end
-#
-#         t2 = time()
-#
-#         tp += (t2-t1)
-#
-#         err = abs.(A'*y_prime-c)
-#         tmp = sortperm(err)
-#
-#         idx = tmp[1:m]
-#
-#         if verbose
-#             println("Index found. Start Solving linear system")
-#         end
-#
-#         A_prime = A[:,idx]
-#
-#
-#         # plenty choice of solving linear equation
-#         try
-#             if mode == 1
-#                 delta = _solve_ls_iter_lu(A,A_prime,b,l,x_star,eps_primal,maxiter,idx,eps_primal,verbose)
-#             elseif mode == 2
-#                 delta = _solve_ls(A_prime,b,x_star,idx)
-#             end
-#         catch e
-#             # TODO need further fix for "singluar matrix"
-#             println(e)
-#             @warn("not able to solve under this mode. use iterative linear programming mode instead")
-#             return _iter_ref_lp(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,maxiter,tp,ts)
-#         end
-#
-#
-#         ts += (time() - t2)
-#
-#
-#         # TODO need further fix. Will iterative linear programming under this condition?
-#         # if delta > eps_primal
-#         #     return _iter_ref_ls(inner,A,b,c,l,T,verbose,alpha_p,alpha_d,itermax,mode)
-#         # end
-#
-#
-#         res = dot(c,x_star)
-#         return termination_status(opt_dual),res,x_star,y_star,tp,ts,dual_status(opt_dual),primal_status(opt_dual)
-# end
-
-
-function _solve_ls_sq(A,b,x_star,idx)
-    step = 9e-5
-    error = 10
-    for j=1:200
-        error = sum((A*x_star-b).^2)
-        println(error)
-        df = 2*(A'*A*x_star-A'*b)
-        if j>4
-            step = 1e-4
-        end
-        x_star[idx] -= df[idx]*step
-    end
-    return error
+        @show res
+        return termination_status(opt_dual),res,x_star,y_star,tp,ts,dual_status(opt_dual),primal_status(opt_dual)
+        #return termination_status(opt_primal),res,x_star,y_star,tp,ts,dual_status(opt_primal),primal_status(opt_primal)
 end
 
 
-function _solve_ls_iter_lu(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose)
-    # pivoted
-    #println(A_prime)
-    lu_bar = lu(Float64.(A_prime))
+function _solve_ls_iter(A,A_prime,b,l,x_star,iter_max,idx,eps_primal,verbose)
+    lu_bar = lu(Float64.(Matrix(A_prime)))
     r_prime = copy(b)
     delta_primal = 100
+
     for k = 1:iter_max
 
             x_star[idx] += (lu_bar\r_prime)
-
-
-            b_hat = b - A*x_star
-
-
-
-            delta_primal = maximum(abs.(b_hat))
-            #delta_primal = max(minimum(b_hat),delta_primal)
-
-
-            if verbose
-                @show k
-                @show delta_primal
-            end
-
-
-            if delta_primal<=eps_primal
-                    return delta_primal
-            end
-
-
-            r_prime = b_hat
-    end
-
-    @warn("need more iterations")
-    return delta_primal
-end
-
-function _solve_ls_iter(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose)
-    # pivoted
-    #println(A_prime)
-    lu_bar = Float64.(A_prime)
-    r_prime = copy(b)
-    delta_primal = 100
-    for k = 1:iter_max
-
-            x_star[idx] += (lu_bar\r_prime)
-            x_star = max.(x_star,l)
-
-            b_hat = b - A*x_star
-
-
-
-            delta_primal = maximum(abs.(b_hat))
-            #delta_primal = max(minimum(b_hat),delta_primal)
-
-
-            if verbose
-                @show k
-                @show delta_primal
-            end
-
-
-            if delta_primal<=eps_primal
-                    return delta_primal
-            end
-
-
-            r_prime = b_hat
-    end
-end
-#
-# function _solve_ls_iter(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose)
-#     # pivoted
-#     #println(A_prime)
-#     solver = Float64.(A_prime)
-#     r_prime = copy(b)
-#     delta_primal = 100
-#     m,n = size(A)
-#     ls = 1:n
-#     @show n
-#     for k = 1:iter_max
-#
-#             x_star[idx] += solver\r_prime
-#
-#             idx2 = ls[l.>x_star]
-#             x_star = max.(x_star,l)
-#             b_hat = b - A*x_star
-#             idx = setdiff(idx,idx2)
-#             solver = Float64.(A[:,idx])
-#
-#             delta_primal = maximum(abs.(b_hat))
-#             #delta_primal = max(minimum(b_hat),delta_primal)
-#
-#
-#             if verbose
-#                 @show k
-#                 @show delta_primal
-#             end
-#
-#
-#             if delta_primal<=eps_primal
-#                     return delta_primal
-#             end
-#
-#
-#             r_prime = b_hat
-#     end
-#
-#     @warn("need more iterations")
-#     return delta_primal
-# end
-
-
-function _solve_ls_iter2(A,A_prime,b,l,x_star,eps,iter_max,tmp,eps_primal,verbose)
-    # pivoted
-    #println(A_prime)
-    idx = tmp[1:m]
-    solver = Float64.(A[:,idx])
-    r_prime = copy(b)
-    delta_primal = 100
-    m,n = size(A)
-    ls = 1:n
-    @show n
-    for k = 1:iter_max
-
-            x_star[idx] += solver\r_prime
-
-            idx2 = ls[l.>x_star]
-            x_star = max.(x_star,l)
-            b_hat = b - A*x_star
-            tmp = setdiff(tmp,idx2)
-            idx=tmp[1:m]
-            solver = Float64.(A[:,idx])
-
-            delta_primal = maximum(abs.(b_hat))
-            #delta_primal = max(minimum(b_hat),delta_primal)
-
-
-            if verbose
-                @show k
-                @show delta_primal
-            end
-
-
-            if delta_primal<=eps_primal
-                    return delta_primal
-            end
-
-
-            r_prime = b_hat
-    end
-
-    @warn("need more iterations")
-    return delta_primal
-end
-
-function _solve_ls(A,b,x_star,idx)
-    x_star[idx] = A\b
-    return 0
-end
-
-### doesn't work
-function _solve_ls_inv(A2,A,b,x_star,idx)
-    r_prime = copy(b)
-    pinvv = pinv(Float64.(A'*A))
-    for k = 1:10
-
-        x_star[idx] += pinvv*A'*r_prime
-        r_prime = b - A2*x_star
-        delta = maximum(abs.(A2*x_star -b))
-        println(delta)
-    end
-    #println(maximum(abs.(A*x_star-b)))
-    return 0
-end
-
-
-### doesn't work
-function _solve_qr_iter(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose)
-    qr_bar = qr(Float64.(A_prime))
-    r_prime = copy(b)
-    delta_primal = 100
-    for k = 1:iter_max
-
-            x_star[idx] += (qr_bar\r_prime)
 
             b_hat = b - A*x_star
             l_hat = l - x_star
 
-
-
-            delta_primal = max(maximum(-b_hat),maximum(l_hat))
-            delta_primal = max(minimum(b_hat),delta_primal)
+            delta_primal = max(maximum(abs.(b_hat)),maximum(l_hat))
 
             if verbose
                 @show k
@@ -1003,9 +723,7 @@ function _solve_qr_iter(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose
 
             if delta_primal<=eps_primal
                     return delta_primal
-
             end
-
 
             r_prime = b_hat
     end
@@ -1014,6 +732,11 @@ function _solve_qr_iter(A,A_prime,b,l,x_star,eps,iter_max,idx,eps_primal,verbose
     return delta_primal
 end
 
-# function lu_col(A_prime)
-#
-# end
+function _solve_ls(A,b,x_star,l,idx)
+    A = Matrix(A)
+    b = Vector(b)
+    x_star[idx] = A\b
+    b_hat = b - A*x_star
+    l_hat = l - x_star
+    delta_primal = max(maximum(abs.(b_hat)),maximum(l_hat))
+end

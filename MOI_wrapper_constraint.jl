@@ -9,8 +9,8 @@ List of supported MOI `ConstraintAttribute`.
 """
 const SUPPORTED_CONSTR_ATTR = Union{
     MOI.ConstraintName,
-    MOI.ConstraintPrimal,
-    MOI.ConstraintDual,
+    #MOI.ConstraintPrimal,
+    #MOI.ConstraintDual,
     MOI.ConstraintFunction,
     MOI.ConstraintSet
 }
@@ -38,8 +38,7 @@ function MOI.is_valid(
 ) where{T, S <:SCALAR_SETS}
     v = MOI.VariableIndex(c.value)
     MOI.is_valid(m, v) || return false
-    # res = S ∈ m.var2bndtype[v]
-    # return res
+
     return haskey(m.con_indices, c)
 end
 
@@ -69,12 +68,8 @@ function MOI.add_constraint(
 
     1 <= j <= m.pbdata.nvar || error("Invalid variable index $j")
 
-    add_constraint!(m.pbdata, [j], [T(1)], -T(Inf), s.upper)
-
-    m.pbdata.lvar[j] = -T(1e300)
-    m.pbdata.nsincon += 1
-
-
+    m.pbdata.uvar[j] = s.upper
+    m.pbdata.lvar[j] = -T(Inf)
     return MOI.ConstraintIndex{MOI.SingleVariable, MOI.LessThan{T}}(v.value)
 end
 
@@ -95,9 +90,7 @@ function MOI.add_constraint(
 
     # Update bound
     m.pbdata.lvar[j] = s.lower
-
-
-
+    m.pbdata.uvar[j] = T(Inf)
     return MOI.ConstraintIndex{MOI.SingleVariable, MOI.GreaterThan{T}}(v.value)
 end
 
@@ -106,7 +99,6 @@ function MOI.add_constraint(
     f::MOI.SingleVariable,
     s::MOI.EqualTo{T}
 ) where{T}
-
     # Check that variable exists
     v = f.variable
     MOI.throw_if_not_valid(m, v)
@@ -116,13 +108,9 @@ function MOI.add_constraint(
     j = m.var_indices[v]  # inner index
     1 <= j <= m.pbdata.nvar || error("Invalid variable index $j")
 
-    add_constraint!(m.pbdata, [j], [T(1)], -T(Inf), s.value)
-
     m.pbdata.lvar[j] = s.value
-
-
+    m.pbdata.uvar[j] = s.value
     # Update bound tracking
-
     return MOI.ConstraintIndex{MOI.SingleVariable, MOI.EqualTo{T}}(v.value)
 end
 
@@ -139,7 +127,7 @@ function MOI.add_constraint(
 
     # Update variable bounds
     j = m.var_indices[v]  # inner index
-    add_constraint!(m.pbdata, [j], [T(1)], -T(Inf), s.upper)
+    m.pbdata.uvar[j] = s.upper
     m.pbdata.lvar[j] = s.lower
 
     # Update bound tracking
@@ -185,86 +173,6 @@ function MOI.add_constraint(
     return cidx
 end
 
-# =============================================
-#   3. Delete constraints
-# =============================================
-# function MOI.delete(
-#     m::Optimizer{T},
-#     c::MOI.ConstraintIndex{MOI.SingleVariable, S}
-# ) where{T, S<:SCALAR_SETS{T}}
-#
-#     # Sanity check
-#     MOI.throw_if_not_valid(m, c)
-#     v = MOI.VariableIndex(c.value)
-#
-#     # Update inner model
-#     j = m.var_indices[v]
-#     if S == MOI.LessThan{T}
-#         # Remove upper-bound
-#         set_attribute(m.inner, VariableUpperBound(), j, T(Inf))
-#     elseif S == MOI.GreaterThan{T}
-#         # Remove lower bound
-#         set_attribute(m.inner, VariableLowerBound(), j, T(-Inf))
-#     else
-#         # Set variable to free
-#         set_attribute(m.inner, VariableLowerBound(), j, T(-Inf))
-#         set_attribute(m.inner, VariableUpperBound(), j, T(Inf))
-#     end
-#
-#     # Update name tracking
-#     old_name = get(m.bnd2name, c, "")
-#     old_name != "" && delete!(m.name2con, old_name)  # delete old name
-#     delete!(m.bnd2name, c)
-#
-#     # Delete tracking of bounds
-#     delete!(m.var2bndtype[v], S)
-#
-#     return nothing
-# end
-#
-# function MOI.delete(
-#     m::Optimizer{T},
-#     c::MOI.ConstraintIndex{MOI.ScalarAffineFunction{T}, S}
-# ) where{T, S<:SCALAR_SETS{T}}
-#     MOI.throw_if_not_valid(m, c)
-#
-#     # Update inner model
-#     i = m.con_indices[c]
-#     old_name = get_attribute(m.inner, ConstraintName(), i)
-#     delete_constraint!(m.inner.pbdata, i)
-#
-#     # Update index tracking
-#     for c_ in m.con_indices_moi[i+1:end]
-#         m.con_indices[c_] -= 1
-#     end
-#     deleteat!(m.con_indices_moi, i)
-#     delete!(m.con_indices, c)
-#
-#     # Update name tracking
-#     old_name != "" && delete!(m.name2con, old_name)
-#
-#     return nothing
-# end
-#
-# # =============================================
-# #   4. Modify constraints
-# # =============================================
-# function MOI.modify(
-#     m::Optimizer{T},
-#     c::MOI.ConstraintIndex{MOI.ScalarAffineFunction{T}, S},
-#     chg::MOI.ScalarCoefficientChange{T}
-# ) where{T, S<:SCALAR_SETS{T}}
-#     MOI.is_valid(m, c) || throw(MOI.InvalidIndex(c))
-#     MOI.is_valid(m, chg.variable) || throw(MOI.InvalidIndex(chg.variable))
-#
-#     # Update inner problem
-#     i = m.con_indices[c]
-#     j = m.var_indices[chg.variable]
-#     v = chg.new_coefficient
-#
-#     set_coefficient!(m.inner.pbdata, i, j, v)
-#     return nothing
-# end
 
 # =============================================
 #   5. Get/set constraint attributes
@@ -600,7 +508,7 @@ end
 #         return m.inner.solution.s_lower[j] - m.inner.solution.s_upper[j]
 #     end
 # end
-
+#
 function MOI.get(
     m::Optimizer{T}, attr::MOI.ConstraintDual,
     c::MOI.ConstraintIndex{MOI.ScalarAffineFunction{T}, S}
@@ -610,5 +518,6 @@ function MOI.get(
 
     # Get dual from inner model
     i = m.con_indices[c]
-    return m.inner.y[i]
+    return 0
+    #return m.inner.y[i]
 end

@@ -152,21 +152,6 @@ function MOI.optimize!(model::Optimizer)
     ref_set_b(inner,tmpdata.b)
     ref_set_c(inner,tmpdata.c)
     ref_set_l(inner,tmpdata.l)
-
-
-    # @show (inner.b)
-
-    # @show (inner.c)
-    # @show (inner.A)
-
-    #@show size(inner.A)
-    #@show size(inner.c)
-    #@show size(inner.l)
-    #@show size(inner.b)
-
-    @show typeof(inner.l)
-
-
     optimize!(inner)
     return
 end

@@ -30,7 +30,6 @@ mutable struct ProblemData{T}
     # Dimensions
     ncon::Int  # Number of rows
     nvar::Int  # Number of columns (i.e. variables)
-    nsincon::Int # Number of single constraint (i.e. so that every variable will be treated as free variable)
 
     # Objective
     # TODO: objective sense
@@ -49,21 +48,24 @@ mutable struct ProblemData{T}
     # qcols
 
     # Bounds
-    # only store in the form Ax <= b and x >= l
     ucon::Vector{T}
     lvar::Vector{T}
+    uvar::Vector{T}
+    svar::Vector{Bool}
+    con_noslack:: Vector{Int}
 
     # Names
     con_names::Vector{String}
     var_names::Vector{String}
+    zidx::Int # col index of obj
 
     # Only allow empty problems to be instantiated for now
     ProblemData{T}(pbname::String="") where {T} = new{T}(
-        pbname, 0, 0,0,
+        pbname, 0, 0,
         true, T[], zero(T),
         Row{T}[], Col{T}[],
-         T[], T[],
-        String[], String[]
+         T[], T[],T[],Bool[],Int[],
+        String[], String[],0
     )
 end
 
@@ -75,7 +77,6 @@ function Base.empty!(pb::ProblemData{T}) where{T}
 
     pb.ncon = 0
     pb.nvar = 0
-    pb.nsincon = 0
 
     pb.objsense = true
     pb.obj = T[]
@@ -84,8 +85,12 @@ function Base.empty!(pb::ProblemData{T}) where{T}
     pb.arows = Row{T}[]
     pb.acols = Col{T}[]
 
+
     pb.ucon = T[]
     pb.lvar = T[]
+    pb.uvar = T[]
+    pb.svar = Bool[]
+    pb.con_noslack = Int[]
 
     pb.con_names = String[]
     pb.var_names = String[]
@@ -101,7 +106,8 @@ end
 """
     add_constraint!(pb, rind, rval, l, u; [name, issorted])
 
-Add one linear constraint to the problem s.t. a^T x <= b
+Add one linear constraint to the problem s.t. A^T x <= b
+                                                l<=x<=u
 
 # Arguments
 * `pb::ProblemData{T}`: the problem to which the new row is added
@@ -124,69 +130,101 @@ function add_constraint!(pb::ProblemData{T},
         "Cannot add a row with $nz indices but $(length(rval)) non-zeros"
     ))
 
+    # constrainted variable
+    if nz == 1 && abs(rval[1])==1
+        idx = rind[1]
+        val = rval[1]
+        if val < 0
+            pb.svar[idx] = false # false = flip sign
+        end
+        pb.lvar[idx] = l
+        pb.uvar[idx] = u
+
+    # linear constraint to matrix (only represented as <=)
+    else
     # Go through through rval to check all coeffs are finite and remove zeros.
-    _rind = Vector{Int}(undef, nz)
-    _rval = Vector{T}(undef, nz)
-    _nz = 0
-    for (j, aij) in zip(rind, rval)
-        if !iszero(aij)
-            isfinite(aij) || error("Invalid row coefficient: $(aij)")
-            _nz += 1
-            _rind[_nz] = j
-            _rval[_nz] = aij
+        _rind = Vector{Int}(undef, nz)
+        _rval = Vector{T}(undef, nz)
+        _nz = 0
+        for (j, aij) in zip(rind, rval)
+            if !iszero(aij)
+                isfinite(aij) || error("Invalid row coefficient: $(aij)")
+                _nz += 1
+                _rind[_nz] = j
+                _rval[_nz] = aij
+            end
         end
-    end
-    resize!(_rind, _nz)
-    resize!(_rval, _nz)
+        resize!(_rind, _nz)
+        resize!(_rval, _nz)
 
-    p = sortperm(_rind)
+        p = sortperm(_rind)
 
-    # TODO: combine dupplicate indices
-
-    # Increment row counter
-    if isfinite(u)
-        pb.ncon += 1
-        push!(pb.ucon, u)
-        push!(pb.con_names, name)
-        # Create new row
-        if issorted
-            row = Row{T}(_rind, _rval)
-        else
-            # Sort indices first
-            row = Row{T}(_rind[p], _rval[p])
-        end
-
-        push!(pb.arows, row)
-        # Update column coefficients
-        for (j, aij) in zip(_rind, _rval)
-            push!(pb.acols[j].nzind, pb.ncon)
-            push!(pb.acols[j].nzval, aij)
-        end
-    end
-
-    if isfinite(l)
-        pb.ncon += 1
-        push!(pb.ucon, -l)
-        # if already named then don't add again
-        if isfinite(u)
-            push!(pb.con_names, "")
-        else
+        # IN ORDER TO AVIOD UNNESSARY SLACK
+        if u == l
+            pb.ncon += 1
+            push!(pb.ucon, u)
             push!(pb.con_names, name)
-        end
-        _rval2 = -_rval
-        if issorted
-            row2 = Row{T}(_rind, _rval2)
+            # Create new row
+            if issorted
+                row = Row{T}(_rind, _rval)
+            else
+                # Sort indices first
+                row = Row{T}(_rind[p], _rval[p])
+            end
+
+            push!(pb.arows, row)
+            # Update column coefficients
+            for (j, aij) in zip(_rind, _rval)
+                push!(pb.acols[j].nzind, pb.ncon)
+                push!(pb.acols[j].nzval, aij)
+            end
+            push!(pb.con_noslack,pb.ncon)
         else
-            # Sort indices first
-            row2 = Row{T}(_rind[p], _rval2[p])
-        end
-        push!(pb.arows, row2)
 
-        for (j, aij) in zip(_rind, _rval2)
-            push!(pb.acols[j].nzind, pb.ncon)
-            push!(pb.acols[j].nzval, aij)
-        end
+            if isfinite(u)
+                pb.ncon += 1
+                push!(pb.ucon, u)
+                push!(pb.con_names, name)
+                # Create new row
+                if issorted
+                    row = Row{T}(_rind, _rval)
+                else
+                    # Sort indices first
+                    row = Row{T}(_rind[p], _rval[p])
+                end
 
+                push!(pb.arows, row)
+                # Update column coefficients
+                for (j, aij) in zip(_rind, _rval)
+                    push!(pb.acols[j].nzind, pb.ncon)
+                    push!(pb.acols[j].nzval, aij)
+                end
+            end
+
+            if isfinite(l)
+                pb.ncon += 1
+                push!(pb.ucon, -l)
+                if isfinite(u)
+                    push!(pb.con_names, "")
+                else
+                    push!(pb.con_names, name)
+                end
+                _rval2 = -_rval
+                if issorted
+                    row2 = Row{T}(_rind, _rval2)
+                else
+                    # Sort indices first
+                    row2 = Row{T}(_rind[p], _rval2[p])
+                end
+                push!(pb.arows, row2)
+
+                for (j, aij) in zip(_rind, _rval2)
+                    push!(pb.acols[j].nzind, pb.ncon)
+                    push!(pb.acols[j].nzval, aij)
+                end
+
+            end
+        end
     end
     # Done
     return pb.ncon
@@ -236,16 +274,13 @@ function add_variable!(pb::ProblemData{T},
 
     # Increment column counter
     pb.nvar += 1
-    if !isfinite(l)
 
-        # TODO need change to handle infinity
-        push!(pb.lvar,T(-1e5))
-    else
-        push!(pb.lvar, l)
-    end
-    #push!(pb.uvar, u)
+    push!(pb.lvar, l)
+    push!(pb.uvar, u)
     push!(pb.obj, obj)
     push!(pb.var_names, name)
+    # default
+    push!(pb.svar,true)
 
     # TODO: combine dupplicate indices
 
@@ -270,7 +305,6 @@ function add_variable!(pb::ProblemData{T},
 end
 
 """
-    load_problem!(pb, )
 
 Load entire problem.
 """
@@ -278,21 +312,22 @@ function load_problem!(pb::ProblemData{T},
     name::String,
     objsense::Bool, obj::Vector{T}, obj0::T,
     A::SparseMatrixCSC,
-    lcon::Vector{T}, ucon::Vector{T},
-    lvar::Vector{T}, uvar::Vector{T},
+    lcon::Vector{T}, con_noslack::Vector{Int},
+    lvar::Vector{T}, uvar::Vector{T},svar::Vector{Bool},
     con_names::Vector{String}, var_names::Vector{String}
 ) where{T}
-    empty!(pb)
 
     # Sanity checks
     ncon, nvar = size(A)
-    ncon == length(lcon) || error("")
     ncon == length(ucon) || error("")
     ncon == length(con_names) || error("")
     nvar == length(obj)
+    #@show obj0
     isfinite(obj0) || error("Objective offset $obj0 is not finite")
     nvar == length(lvar) || error("")
     nvar == length(uvar) || error("")
+
+
 
     # Copy data
     pb.name = name
@@ -301,10 +336,11 @@ function load_problem!(pb::ProblemData{T},
     pb.objsense = objsense
     pb.obj = copy(obj)
     pb.obj0 = obj0
-    pb.lcon = copy(lcon)
+    pb.con_noslack = copy(con_noslack)
     pb.ucon = copy(ucon)
     pb.lvar = copy(lvar)
     pb.uvar = copy(uvar)
+    pb.svar = copy(svar)
     pb.con_names = copy(con_names)
     pb.var_names = copy(var_names)
 

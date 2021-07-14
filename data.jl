@@ -1,6 +1,8 @@
 """
     IRData{T, Tv, Ta}
+
 Holds data about an interior point method.
+
 The problem is represented as
 ```
 min   c'x + c0
@@ -28,11 +30,18 @@ struct IRData{T, Tv, Tb, Ta}
 
     # Variable bounds (may contain infinite values)
     l::Tv
+    u::Tv
+
+    zidx::Int # col index of obj
+
+
     # Variable bound flags (we template with `Tb` to ease GPU support)
     # These should be vectors of the same type as `l`, `u`, but `Bool` eltype.
     # They should not be passed as arguments, but computed at instantiation as
     # `lflag = isfinite.(l)` and `uflag = isfinite.(u)`
-    lflag::Tb
+    lflag::Vector{Bool}
+    uflag::Vector{Bool}
+    svar::Vector{Bool}
 
     function IRData(
         A::Ta, b::Tv, objsense::Bool, c::Tv, c0::T, l::Tv,
@@ -53,283 +62,26 @@ end
 # TODO: extract IPM data from presolved problem
 """
     IRData(pb::ProblemData, options::MatrixOptions)
+
 Extract problem data to standard form.
 """
-# function IRData(pb::ProblemData{T}) where{T}
-#
-#     # Problem size
-#     m, n = pb.ncon, pb.nvar
-#
-#     # Extract right-hand side and slack variables
-#     nzA = 0          # Number of non-zeros in A
-#     b = zeros(T, m)  # RHS
-#     sind = Int[]     # Slack row index
-#     sval = T[]       # Slack coefficient
-#     lslack = T[]     # Slack lower bound
-#
-#
-#     counter = 1
-#     for (i, ub) in enumerate(pb.ucon)
-#
-#         push!(sind, i)
-#         push!(sval, one(T))
-#         push!(lslack, zero(T))
-#         b[i] = ub
-#
-#
-#         # This line assumes that there are no dupplicate coefficients in Arows
-#         # Numerical zeros will also be counted as non-zeros
-#         nzA += length(pb.arows[i].nzind)
-#     end
-#
-#     nslack = length(sind)
-#
-#     # Objective
-#     c = [pb.obj; zeros(T, nslack)]
-#     c0 = pb.obj0
-#     if !pb.objsense
-#         # Flip objective for maximization problem
-#         c .= -c
-#         c0 = -c0
-#     end
-#
-#     # Instantiate A
-#     aI = Vector{Int}(undef, nzA + nslack)
-#     aJ = Vector{Int}(undef, nzA + nslack)
-#     aV = Vector{T}(undef, nzA + nslack)
-#
-#     # populate non-zero coefficients by column
-#     nz_ = 0
-#     for (j, col) in enumerate(pb.acols)
-#         for (i, aij) in zip(col.nzind, col.nzval)
-#             nz_ += 1
-#
-#             aI[nz_] = i
-#             aJ[nz_] = j
-#             aV[nz_] = aij
-#         end
-#     end
-#     # populate slack coefficients
-#     for (j, (i, a)) in enumerate(zip(sind, sval))
-#         nz_ += 1
-#         aI[nz_] = i
-#         aJ[nz_] = n + j
-#         aV[nz_] = a
-#     end
-#
-#     # At this point, we should have nz_ == nzA + nslack
-#     # If not, this means the data between rows and columns in `pb`
-#     # do not match each other
-#     nz_ == (nzA + nslack) || error("Found $(nz_) non-zero coeffs (expected $(nzA + nslack))")
-#
-#     A = zeros(T, m, n+nslack)
-#
-#     for(i, j, v) in zip(aI, aJ, aV)
-#         A[i, j] = v
-#     end
-#
-#
-#     # Variable bounds
-#     l = [pb.lvar; lslack]
-#
-#     return IRData(A, b, pb.objsense, c, c0, l)
-# end
-
-# function IRData(pb::ProblemData{T}) where{T}
-#
-#     # Problem size
-#     m, n = pb.ncon, pb.nvar
-#
-#     # Extract right-hand side and slack variables
-#     nzA = 0          # Number of non-zeros in A
-#     b = zeros(T, m)  # RHS
-#
-#
-#
-#     counter = 1
-#     for (i, ub) in enumerate(pb.ucon)
-#
-#
-#         b[i] = ub
-#
-#
-#         # This line assumes that there are no dupplicate coefficients in Arows
-#         # Numerical zeros will also be counted as non-zeros
-#         nzA += length(pb.arows[i].nzind)
-#     end
-#
-#
-#
-#     # Objective
-#     c = pb.obj
-#     c0 = pb.obj0
-#     if !pb.objsense
-#         # Flip objective for maximization problem
-#         c .= -c
-#         c0 = -c0
-#     end
-#
-#     # Instantiate A
-#     aI = Vector{Int}(undef, nzA)
-#     aJ = Vector{Int}(undef, nzA)
-#     aV = Vector{T}(undef, nzA )
-#
-#     # populate non-zero coefficients by column
-#     nz_ = 0
-#     for (j, col) in enumerate(pb.acols)
-#         for (i, aij) in zip(col.nzind, col.nzval)
-#             nz_ += 1
-#
-#             aI[nz_] = i
-#             aJ[nz_] = j
-#             aV[nz_] = aij
-#         end
-#     end
-#     # populate slack coefficients
-#
-#
-#     # At this point, we should have nz_ == nzA + nslack
-#     # If not, this means the data between rows and columns in `pb`
-#     # do not match each other
-#     nz_ == (nzA) || error("Found $(nz_) non-zero coeffs (expected $(nzA + nslack))")
-#
-#     A = zeros(T, m, n)
-#
-#     for(i, j, v) in zip(aI, aJ, aV)
-#         A[i, j] = v
-#     end
-#
-#
-#     # Variable bounds
-#     l = pb.lvar
-#
-#     return IRData(A, b, pb.objsense, c, c0, l)
-# end
-
-# function IRData(pb::ProblemData{T}) where{T}
-#
-#     # Problem size
-#     m, n = pb.ncon, pb.nvar
-#
-#     # Extract right-hand side and slack variables
-#     nzA = 0          # Number of non-zeros in A
-#     b = zeros(T, m*2)  # RHS
-#     sind = Int[]     # Slack row index
-#     sval = T[]       # Slack coefficient
-#     lslack = T[]     # Slack lower bound
-#
-#
-#     counter = 1
-#     for (i, ub) in enumerate(pb.ucon)
-#
-#         push!(sind, i)
-#         push!(sval, one(T))
-#         push!(lslack, zero(T))
-#
-#         push!(sind, i)
-#         push!(sval, one(T))
-#         push!(lslack, zero(T))
-#
-#
-#         b[i] = ub
-#         b[m+i] = zero(T)
-#
-#
-#         # This line assumes that there are no dupplicate coefficients in Arows
-#         # Numerical zeros will also be counted as non-zeros
-#         nzA += length(pb.arows[i].nzind)
-#     end
-#
-#     nslack = length(sind)
-#
-#
-#     nslack == m*2 || error("nslack num error")
-#
-#     # Objective
-#     c = [pb.obj; zeros(T, nslack)]
-#     c0 = pb.obj0
-#     if !pb.objsense
-#         # Flip objective for maximization problem
-#         c .= -c
-#         c0 = -c0
-#     end
-#
-#     # Instantiate A
-#     aI = Vector{Int}(undef, nzA + nslack*2)
-#     aJ = Vector{Int}(undef, nzA + nslack*2)
-#     aV = Vector{T}(undef, nzA + nslack*2)
-#
-#     # populate non-zero coefficients by column
-#     nz_ = 0
-#     for (j, col) in enumerate(pb.acols)
-#         for (i, aij) in zip(col.nzind, col.nzval)
-#             nz_ += 1
-#
-#             aI[nz_] = i
-#             aJ[nz_] = j
-#             aV[nz_] = aij
-#         end
-#     end
-#     # populate slack coefficients
-#
-#     for (j, (i, a)) in enumerate(zip(sind, sval))
-#         nz_ += 1
-#         aI[nz_] = i
-#         aJ[nz_] = n + j
-#         aV[nz_] = one(T)
-#
-#
-#
-#         nz_ += 1
-#         aI[nz_] = m+i
-#         aJ[nz_] = n + j
-#         aV[nz_] = -one(T)
-#
-#
-#     end
-#
-#     # At this point, we should have nz_ == nzA + nslack
-#     # If not, this means the data between rows and columns in `pb`
-#     # do not match each other
-#     nz_ == (nzA + nslack*2) || error("Found $(nz_) non-zero coeffs (expected $(nzA + nslack))")
-#
-#     A = zeros(T, 2*m, n+nslack)
-#
-#     for(i, j, v) in zip(aI, aJ, aV)
-#         A[i, j] = v
-#     end
-#
-#
-#     # Variable bounds
-#     l = [pb.lvar; lslack]
-#
-#     return IRData(A, b, pb.objsense, c, c0, l)
-# end
-
-
 function IRData(pb::ProblemData{T}) where{T}
 
     # Problem size
     m, n = pb.ncon, pb.nvar
 
+    # extract true objective function, get auxilary z position, then find corresponding row
+    zidx = (1:n)[pb.obj.!=0]
+    zidx = zidx[1]
+    pb.zidx = zidx
+
     # Extract right-hand side and slack variables
     nzA = 0          # Number of non-zeros in A
-    b = zeros(T, m*2)  # RHS
-    sind = Int[]     # Slack row index
-    sval = T[]       # Slack coefficient
-    lslack = T[]     # Slack lower bound
-
+    b = zeros(T, m)  # RHS
 
     counter = 1
     for (i, ub) in enumerate(pb.ucon)
-
-        push!(sind, i)
-        push!(sval, one(T))
-        push!(lslack, zero(T))
-
-
         b[i] = ub
-        b[m+i] = zero(T)
 
 
         # This line assumes that there are no dupplicate coefficients in Arows
@@ -337,13 +89,35 @@ function IRData(pb::ProblemData{T}) where{T}
         nzA += length(pb.arows[i].nzind)
     end
 
-    nslack = length(sind)
+    # Instantiate A
+    aI = Vector{Int}(undef, nzA)
+    aJ = Vector{Int}(undef, nzA )
+    aV = Vector{T}(undef, nzA )
 
+    # populate non-zero coefficients by column, include z col
+    nz_ = 0
+    for (j, col) in enumerate(pb.acols)
+        if !pb.svar[j]
+            col.nzval = -col.nzval
+        end
+        for (i, aij) in zip(col.nzind, col.nzval)
+            nz_ += 1
+            aI[nz_] = i
+            aJ[nz_] = j
+            aV[nz_] = aij
+        end
+    end
 
-    nslack == m || error("nslack num error")
+    A = zeros(T, m, n)
 
-    # Objective
-    c = [pb.obj; zeros(T, nslack)]
+    for(i, j, v) in zip(aI, aJ, aV)
+        A[i, j] = v
+    end
+
+    c = vec(A[1,:])
+    c = c[setdiff(1:n, zidx)]
+    # default obj0 is zero, need to change
+    pb.obj0 = -b[1]
     c0 = pb.obj0
     if !pb.objsense
         # Flip objective for maximization problem
@@ -351,156 +125,40 @@ function IRData(pb::ProblemData{T}) where{T}
         c0 = -c0
     end
 
-    # Instantiate A
-    aI = Vector{Int}(undef, nzA + nslack*2)
-    aJ = Vector{Int}(undef, nzA + nslack*2)
-    aV = Vector{T}(undef, nzA + nslack*2)
+    A = A[2:end,setdiff(1:n,zidx)]
+    #
+    # println("before slack")
+    # @show size(A)
 
-    # populate non-zero coefficients by column
-    nz_ = 0
-    for (j, col) in enumerate(pb.acols)
-        for (i, aij) in zip(col.nzind, col.nzval)
-            nz_ += 1
+    b = b[2:end]
+    l = copy(pb.lvar)
+    l = l[setdiff(1:n,zidx)]
 
-            aI[nz_] = i
-            aJ[nz_] = j
-            aV[nz_] = aij
+    # upper bound of variable
+    for i = 1:n
+        if isfinite(pb.uvar[i])
+            tmp = T.(zeros(n))
+            tmp[i] = T(1)
+            A = [A;tmp]
+            b = [b;uvar[i]]
         end
     end
-    # populate slack coefficients
 
-    for (j, (i, a)) in enumerate(zip(sind, sval))
-        nz_ += 1
-        aI[nz_] = i
-        aJ[nz_] = n + j
-        aV[nz_] = one(T)
+    m,n = size(A)
+    aux = T.(I(m))
 
 
+    # reduce the obj row
+    noslack = pb.con_noslack.-1
+    aux_idx = setdiff(1:m,noslack)
+    aux = aux[:,aux_idx]
 
-        nz_ += 1
-        aI[nz_] = m+i
-        aJ[nz_] = n + j
-        aV[nz_] = -one(T)
+    A = [A aux]
+    c = [c; zeros(length(aux_idx))]
+    l = [l;zeros(length(aux_idx))]
 
+    #@show size(A)
 
-    end
-
-    # At this point, we should have nz_ == nzA + nslack
-    # If not, this means the data between rows and columns in `pb`
-    # do not match each other
-    nz_ == (nzA + nslack*2) || error("Found $(nz_) non-zero coeffs (expected $(nzA + nslack))")
-
-    A = zeros(T, 2*m, n+nslack)
-
-    for(i, j, v) in zip(aI, aJ, aV)
-        A[i, j] = v
-    end
-
-
-    # Variable bounds
-    l = [pb.lvar; lslack]
 
     return IRData(A, b, pb.objsense, c, c0, l)
 end
-
-# function IRData(pb::ProblemData{T}) where{T}
-#
-#     # Problem size
-#     m, n = pb.ncon, pb.nvar
-#
-#     # m = m-n-1
-#     # n = n-1
-#
-#     # Extract right-hand side and slack variables
-#     nzA = 0          # Number of non-zeros in A
-#     b = T[]  # RHS
-#     sind = Int[]     # Slack row index
-#     sval = T[]       # Slack coefficient
-#     lslack = T[]     # Slack lower bound
-#     l = T[]
-#     c = zeros(T,n-1)
-#
-#     counter = 1
-#     for (i, ub) in enumerate(pb.ucon)
-#
-#         if i < n
-#             push!(l, -ub)
-#
-#
-#         elseif i == n
-#             r = pb.arows[i]
-#             for i = 1:length(r.nzind)-1
-#                 c[r.nzind[i]] = r.nzval[i]
-#             end
-#         elseif i>n+1
-#             push!(sind, i-n-1)
-#             push!(sval, one(T))
-#             push!(lslack, zero(T))
-#             push!(b, ub)
-#             nzA += length(pb.arows[i].nzind)
-#         end
-#
-#
-#     end
-#
-#     nslack = length(sind)
-#
-#     # Objective
-#     c = [c; zeros(T, nslack)]
-#     c0 = pb.obj0
-#     if !pb.objsense
-#         # Flip objective for maximization problem
-#         c .= -c
-#         c0 = -c0
-#     end
-#
-#     @show c
-#     @show nslack
-#     @show nzA
-#
-#     # Instantiate A
-#     aI = Vector{Int}(undef, nzA + nslack)
-#     aJ = Vector{Int}(undef, nzA + nslack)
-#     aV = Vector{T}(undef, nzA + nslack)
-#
-#     m = m-n-1
-#     n = n-1
-#
-#     # populate non-zero coefficients by column
-#     nz_ = 0
-#     for (j, col) in enumerate(pb.acols)
-#         for (i, aij) in zip(col.nzind, col.nzval)
-#             if i>n+2 && j<=n
-#                 nz_ += 1
-#
-#                 aI[nz_] = i-n-2
-#                 aJ[nz_] = j
-#                 aV[nz_] = aij
-#             end
-#         end
-#     end
-#     # populate slack coefficients
-#     for (j, (i, a)) in enumerate(zip(sind, sval))
-#         nz_ += 1
-#         aI[nz_] = i
-#         aJ[nz_] = n + j
-#         aV[nz_] = a
-#     end
-#
-#     # At this point, we should have nz_ == nzA + nslack
-#     # If not, this means the data between rows and columns in `pb`
-#     # do not match each other
-#     nz_ == (nzA + nslack) || error("Found $(nz_) non-zero coeffs (expected $(nzA + nslack))")
-#
-#     A = zeros(T, m, n+nslack)
-#
-#     for(i, j, v) in zip(aI, aJ, aV)
-#         A[i, j] = v
-#     end
-#
-#
-#     # Variable bounds
-#     l = [l; lslack]
-#
-#     return IRData(A, b, pb.objsense, c, c0, l)
-# end
